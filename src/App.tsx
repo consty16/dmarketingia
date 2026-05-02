@@ -6,14 +6,31 @@
 import { useState, useRef, ChangeEvent, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Banana, Sparkles, Download, Loader2, Camera, RotateCcw, Upload, X, Send, MessageSquare } from 'lucide-react';
-import { generateNanoBananaArt, editNanoBananaArt, geminiChat } from './lib/gemini';
+import { generateNanoBananaArt, editNanoBananaArt, generateNanoBananaVideo, geminiChat } from './lib/gemini';
 
 export default function App() {
   const [prompt, setPrompt] = useState('');
   const [isGenerating, setIsGenerating] = useState(false);
+  const [isGeneratingVideo, setIsGeneratingVideo] = useState(false);
   const [resultImage, setResultImage] = useState<string | null>(null);
+  const [resultVideo, setResultVideo] = useState<string | null>(null);
   const [sourceImage, setSourceImage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+
+  // Quota Tracking State
+  const [imageQuoteCount, setImageQuoteCount] = useState<number>(0);
+  const [videoQuoteCount, setVideoQuoteCount] = useState<number>(0);
+  const IMAGE_LIMIT = 2;
+  const VIDEO_LIMIT = 1;
+  const DEV_MODE = true; // Set to false for real production launch
+
+  // Initial load of quota from localStorage
+  useEffect(() => {
+    const savedImageCount = localStorage.getItem('nano_image_quota');
+    const savedVideoCount = localStorage.getItem('nano_video_quota');
+    if (savedImageCount) setImageQuoteCount(parseInt(savedImageCount));
+    if (savedVideoCount) setVideoQuoteCount(parseInt(savedVideoCount));
+  }, []);
 
     // Chat State
   const initialWelcomeMessage = `💬 INICIO
@@ -91,41 +108,58 @@ Podés elegir una opción o escribir directamente tu consulta:
   const handleGenerate = async () => {
     if (!prompt.trim()) return;
     
+    if (!DEV_MODE && imageQuoteCount >= IMAGE_LIMIT) {
+      setError(`Has alcanzado tu límite gratuito de ${IMAGE_LIMIT} imágenes. Contactá a NOVA Agency para un plan ilimitado.`);
+      return;
+    }
+    
     setIsGenerating(true);
     setError(null);
     setResultImage(null);
 
     try {
-      let imageUrl;
+      let url;
       if (sourceImage) {
-        imageUrl = await editNanoBananaArt(prompt, sourceImage);
+        url = await editNanoBananaArt(prompt, sourceImage);
       } else {
-        imageUrl = await generateNanoBananaArt(prompt);
+        url = await generateNanoBananaArt(prompt);
       }
-      setResultImage(imageUrl);
-    } catch (err) {
+      
+      setResultImage(url);
+      const newCount = imageQuoteCount + 1;
+      setImageQuoteCount(newCount);
+      localStorage.setItem('nano_image_quota', newCount.toString());
+    } catch (err: any) {
       console.error(err);
-      let message = 'An unexpected error occurred. Please check your connection.';
-      
-      if (err instanceof Error) {
-        message = err.message;
-        try {
-          // Attempt to parse JSON error from API
-          const parsed = JSON.parse(message);
-          if (parsed.error?.message) {
-            message = parsed.error.message;
-            if (parsed.error?.code === 403) {
-              message = "Music generation (Lyria) requires a personal Gemini API Key with specific permissions. Please ensure your key has access to the Lyria models in the Gemini API Console.";
-            }
-          }
-        } catch (e) {
-          // Not JSON, use raw message
-        }
-      }
-      
-      setError(message);
+      setError(err.message || 'Error al conectar con la API de Imagen.');
     } finally {
       setIsGenerating(false);
+    }
+  };
+
+  const handleGenerateVideo = async () => {
+    if (!prompt.trim()) return;
+    
+    if (!DEV_MODE && videoQuoteCount >= VIDEO_LIMIT) {
+      setError(`Has alcanzado tu límite gratuito de ${VIDEO_LIMIT} video. Contactá a NOVA Agency para un plan ilimitado.`);
+      return;
+    }
+    
+    setIsGeneratingVideo(true);
+    setError(null);
+    setResultVideo(null);
+
+    try {
+      const url = await generateNanoBananaVideo(prompt);
+      setResultVideo(url);
+      const newCount = videoQuoteCount + 1;
+      setVideoQuoteCount(newCount);
+      localStorage.setItem('nano_video_quota', newCount.toString());
+    } catch (err: any) {
+      console.error(err);
+      setError(err.message || 'Error al conectar con la API de Video.');
+    } finally {
+      setIsGeneratingVideo(false);
     }
   };
 
@@ -138,22 +172,18 @@ Podés elegir una opción o escribir directamente tu consulta:
     setIsChatLoading(true);
 
     try {
-      // Filter out the initial welcome message from the history sent to the API
-      // because Gemini multi-turn conversations must start with a 'user' role.
-      const history = chatMessages
-        .filter((_, idx) => idx > 0) // Skip the initial welcome message
-        .map(msg => ({
-          role: msg.role,
+      // In App.tsx, the history needs to be in the format expected by geminiChat
+      const historyForGemini = chatMessages.map(msg => ({
+          role: msg.role === 'model' ? 'model' : 'user',
           parts: [{ text: msg.text }]
-        }));
+      }));
       
-      const response = await geminiChat(userMessage, history);
+      const response = await geminiChat(userMessage, historyForGemini);
       setChatMessages(prev => [...prev, { role: 'model', text: response }]);
       setTimeout(scrollToBottom, 100);
     } catch (err: any) {
       console.error('Chat Error:', err);
-      const errorMessage = err?.message || "Lo siento, ocurrió un error en la conexión. Por favor intenta de nuevo.";
-      setChatMessages(prev => [...prev, { role: 'model', text: `⚠️ Error: ${errorMessage}` }]);
+      setChatMessages(prev => [...prev, { role: 'model', text: `⚠️ Error: ${err.message}` }]);
       setTimeout(scrollToBottom, 100);
     } finally {
       setIsChatLoading(false);
@@ -198,13 +228,12 @@ Podés elegir una opción o escribir directamente tu consulta:
             initial={{ opacity: 0, scale: 0.9 }}
             animate={{ opacity: 1, scale: 1 }}
             transition={{ delay: 0.2 }}
-            className="hidden lg:flex items-center justify-center w-48 h-48 border border-[#b57bee] shadow-[0_0_25px_rgba(181,123,238,0.6),inset_0_0_15px_rgba(181,123,238,0.4)] rounded-full p-4 relative"
+            className="flex items-center justify-center w-36 h-36 lg:w-48 lg:h-48 border border-[#b57bee] shadow-[0_0_25px_rgba(181,123,238,0.6),inset_0_0_15px_rgba(181,123,238,0.4)] rounded-full p-4 relative"
           >
             <div className="absolute inset-0 animate-spin-slow pointer-events-none">
               <div className="absolute top-0 left-1/2 -translate-x-1/2 w-4 h-4 bg-[#b57bee] shadow-[0_0_15px_3px_rgba(181,123,238,1)] rounded-full" />
             </div>
             
-            {/* Círculo punteado interior restaurado */}
             <div className="absolute inset-4 rounded-full border border-dashed border-[#b57bee] shadow-[0_0_15px_rgba(181,123,238,0.4)] pointer-events-none" />
 
             <a 
@@ -226,7 +255,7 @@ Podés elegir una opción o escribir directamente tu consulta:
               <textarea
                 value={prompt}
                 onChange={(e) => setPrompt(e.target.value)}
-                placeholder="Describe your vision (e.g. 'A futuristic city in the clouds', 'A cybernetic monkey')..."
+                placeholder="Describe tu visión (ej. 'Una ciudad futurista en las nubes', 'Un mono cibernético')..."
                 className="w-full bg-[#111] border-2 border-[#b57bee]/50 rounded-2xl p-6 text-xl placeholder:opacity-30 focus:border-[#b57bee] focus:outline-none transition-all resize-none min-h-[160px]"
               />
             </div>
@@ -269,33 +298,79 @@ Podés elegir una opción o escribir directamente tu consulta:
 
               <button
                 onClick={handleGenerate}
-                disabled={isGenerating || !prompt}
-                className="flex-1 min-h-[60px] bg-[#FFE135] border-2 border-[#b57bee] text-black font-bold flex items-center justify-center gap-2 rounded-2xl hover:bg-white transition-colors disabled:opacity-50 disabled:cursor-not-allowed group uppercase tracking-widest text-sm"
+                disabled={isGenerating || isGeneratingVideo || !prompt || (!DEV_MODE && imageQuoteCount >= IMAGE_LIMIT)}
+                className="flex-1 min-h-[60px] bg-[#FFE135] border-2 border-[#b57bee] text-black font-bold flex items-center justify-center gap-2 rounded-2xl hover:bg-white transition-colors disabled:opacity-50 disabled:cursor-not-allowed group uppercase tracking-widest text-sm relative overflow-hidden"
               >
                 <Camera className="w-5 h-5 group-hover:scale-110 transition-transform" />
-                <span>{sourceImage ? 'Modify Image' : 'Generate Art'}</span>
+                <div className="flex flex-col items-center">
+                  <span>{sourceImage ? 'Modify Image' : 'Generate Art'}</span>
+                  <span className="text-[9px] opacity-60">
+                    {imageQuoteCount >= IMAGE_LIMIT && !DEV_MODE ? 'CUOTA AGOTADA' : `RESTAN: ${IMAGE_LIMIT - imageQuoteCount}`}
+                  </span>
+                </div>
+              </button>
+
+              <button
+                onClick={handleGenerateVideo}
+                disabled={isGenerating || isGeneratingVideo || !prompt || (!DEV_MODE && videoQuoteCount >= VIDEO_LIMIT)}
+                className="flex-1 min-h-[60px] border-2 border-[#b57bee] text-[#b57bee] font-bold flex items-center justify-center gap-2 rounded-2xl hover:bg-[#b57bee]/10 hover:text-white transition-all disabled:opacity-50 disabled:cursor-not-allowed group uppercase tracking-widest text-sm shadow-[0_0_15px_rgba(181,123,238,0.2)]"
+              >
+                <Sparkles className="w-5 h-5 group-hover:rotate-12 transition-transform text-[#FFE135]" />
+                <div className="flex flex-col items-center">
+                  <span>Generate Video</span>
+                  <span className="text-[9px] opacity-60">
+                    {videoQuoteCount >= VIDEO_LIMIT && !DEV_MODE ? 'CUOTA AGOTADA' : `RESTAN: ${VIDEO_LIMIT - videoQuoteCount}`}
+                  </span>
+                </div>
               </button>
             </div>
           </div>
         </section>
 
-        {/* Loading State */}
+        {/* Quota Exhausted CTA */}
+        {!DEV_MODE && (imageQuoteCount >= IMAGE_LIMIT || videoQuoteCount >= VIDEO_LIMIT) && (
+          <motion.div 
+            initial={{ opacity: 0, scale: 0.9 }}
+            animate={{ opacity: 1, scale: 1 }}
+            className="mb-12 p-8 bg-[#b57bee]/10 border-2 border-[#b57bee] rounded-[40px] text-center shadow-[0_0_50px_-10px_rgba(181,123,238,0.3)]"
+          >
+            <h2 className="text-3xl font-black italic mb-4 text-[#FFE135] tracking-tighter uppercase">
+              ¡Ya probaste el poder de NOVA! 🚀
+            </h2>
+            <p className="text-base opacity-80 mb-8 max-w-lg mx-auto">
+              Tu talento creativo merece más. Desbloqueá acceso ilimitado para seguir creando contenido profesional con NOVA Agency.
+            </p>
+            <a 
+              href="https://wa.me/5491155018698"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center gap-3 bg-[#FFE135] text-black px-10 py-5 rounded-full font-black uppercase tracking-widest hover:bg-white hover:scale-105 active:scale-95 transition-all shadow-[0_0_20px_rgba(255,225,53,0.4)]"
+            >
+              <Send className="w-5 h-5" />
+              Solicitar acceso ilimitado
+            </a>
+          </motion.div>
+        )}
+
+        {/* Loading State - Image or Video */}
         <AnimatePresence>
-          {isGenerating && (
+          {(isGenerating || isGeneratingVideo) && (
             <motion.div
               initial={{ opacity: 0, y: 10 }}
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0 }}
-              className="flex flex-col items-center justify-center gap-6 py-20 border-2 border-dashed border-white/10 rounded-3xl mb-12"
+              className="flex flex-col items-center justify-center gap-6 py-20 border-2 border-dashed border-[#b57bee]/30 rounded-3xl mb-12"
             >
               <div className="relative">
                 <Loader2 className="w-16 h-16 text-[#FFE135] animate-spin" />
                 <Banana className="absolute inset-0 m-auto w-6 h-6 animate-pulse" />
               </div>
               <div className="text-center">
-                <p className="text-2xl font-bold italic mb-2">EXTRACTING NANO POTENCY...</p>
+                <p className="text-2xl font-bold italic mb-2 tracking-tighter">
+                  {isGeneratingVideo ? 'COOKING NANO VIDEO...' : 'EXTRACTING NANO POTENCY...'}
+                </p>
                 <p className="text-xs font-mono uppercase opacity-50 tracking-[0.3em]">
-                  Painting with radioactive fruit
+                  {isGeneratingVideo ? 'Synthesizing motion frames' : 'Painting with radioactive fruit'}
                 </p>
               </div>
             </motion.div>
@@ -352,6 +427,39 @@ Podés elegir una opción o escribir directamente tu consulta:
             </motion.div>
           )}
 
+          {/* Video Result */}
+          {resultVideo && (
+            <motion.div 
+              initial={{ opacity: 0, scale: 0.95 }}
+              animate={{ opacity: 1, scale: 1 }}
+              className="group relative max-w-2xl w-full"
+            >
+              <div className="absolute inset-0 bg-[#b57bee] blur-2xl opacity-0 group-hover:opacity-10 transition-opacity" />
+              <div className="relative bg-[#111] border border-[#b57bee]/50 rounded-3xl overflow-hidden aspect-video shadow-[0_0_40px_-10px_rgba(181,123,238,0.3)]">
+                <video 
+                  src={resultVideo} 
+                  className="w-full h-full object-cover"
+                  controls
+                  autoPlay
+                  loop
+                />
+                <div className="absolute top-4 left-4 bg-black/60 backdrop-blur-md px-3 py-1 rounded-full border border-white/10">
+                  <span className="text-[10px] font-mono text-[#FFE135] uppercase tracking-widest">Nano-Motion_v1.0</span>
+                </div>
+                <div className="absolute bottom-4 right-4 opacity-0 group-hover:opacity-100 transition-opacity">
+                  <a 
+                    href={resultVideo} 
+                    download="nanobanana_video.mp4"
+                    className="flex items-center gap-2 bg-[#FFE135] text-black px-4 py-2 rounded-lg font-bold text-xs hover:scale-105 active:scale-95 transition-transform"
+                  >
+                    <Download className="w-3 h-3" />
+                    SAVE VIDEO
+                  </a>
+                </div>
+              </div>
+            </motion.div>
+          )}
+
           {/* Gemini Chat Section */}
           <section className="w-full max-w-2xl bg-[#111] border border-[#b57bee] rounded-3xl overflow-hidden flex flex-col h-[500px]">
             <div className="p-6 border-b border-[#b57bee]/50 flex items-center justify-between bg-black/20">
@@ -361,7 +469,7 @@ Podés elegir una opción o escribir directamente tu consulta:
                 </div>
                 <div>
                   <h3 className="text-sm font-bold uppercase tracking-widest">NOVA Agency</h3>
-                  <p className="text-[10px] font-mono opacity-40">Powered by Gemini 3 Flash</p>
+                  <p className="text-[10px] font-mono opacity-40">Powered by Gemini 2.5 Flash</p>
                 </div>
               </div>
               <div className="flex items-center gap-2">
