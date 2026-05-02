@@ -1,18 +1,13 @@
 import { GoogleGenAI } from "@google/genai";
 
-// Inicialización perezosa para evitar que la app explote si la llave no está lista al cargar
 let aiInstance: GoogleGenAI | null = null;
 
 function getAI() {
   if (!aiInstance) {
-    // La forma correcta según el skill: usar process.env.GEMINI_API_KEY
-    // Asegurate de configurarla en Vercel > Settings > Environment Variables
     const apiKey = process.env.GEMINI_API_KEY;
-    
     if (!apiKey) {
-      throw new Error("⚠️ GEMINI_API_KEY no detectada. Por favor, agregá tu API Key en Vercel (Settings > Environment Variables) con el nombre GEMINI_API_KEY.");
+      throw new Error("⚠️ GEMINI_API_KEY no detectada. Agregá tu API Key en los Ajustes.");
     }
-    
     aiInstance = new GoogleGenAI({ apiKey });
   }
   return aiInstance;
@@ -58,8 +53,7 @@ export async function generateNanoBananaArt(prompt: string) {
 
     for (const part of response.candidates?.[0]?.content?.parts || []) {
       if (part.inlineData) {
-        const base64EncodeString = part.inlineData.data;
-        return `data:image/png;base64,${base64EncodeString}`;
+        return `data:image/png;base64,${part.inlineData.data}`;
       }
     }
     throw new Error("No se devolvió un formato de imagen válido.");
@@ -73,7 +67,6 @@ export async function editNanoBananaArt(prompt: string, base64Image: string) {
   const ai = getAI();
   const mimeType = base64Image.match(/data:([^;]+);/)?.[1] || "image/png";
   const data = base64Image.split(",")[1];
-
   const fullPrompt = `${prompt}, high quality, studio lighting.`;
   
   try {
@@ -98,16 +91,73 @@ export async function editNanoBananaArt(prompt: string, base64Image: string) {
   }
 }
 
+export async function generateNanoBananaVideo(prompt: string) {
+  const ai = getAI();
+  const fullPrompt = `${prompt}, high quality video, cinematic movement, studio lighting, smooth motion.`;
+  
+  try {
+    let operation = await ai.models.generateVideos({
+      model: 'veo-3.1-lite-generate-preview',
+      prompt: fullPrompt,
+      config: {
+        numberOfVideos: 1,
+        resolution: '1080p',
+        aspectRatio: '16:9'
+      }
+    });
+
+    while (!operation.done) {
+      await new Promise(resolve => setTimeout(resolve, 5000));
+      operation = await ai.operations.getVideosOperation({ operation: operation });
+    }
+
+    const downloadLink = operation.response?.generatedVideos?.[0]?.video?.uri;
+    if (!downloadLink) {
+      throw new Error("No se encontró el enlace de descarga del video.");
+    }
+
+    const apiKey = process.env.GEMINI_API_KEY;
+    const response = await fetch(downloadLink, {
+      method: 'GET',
+      headers: {
+        'x-goog-api-key': apiKey || '',
+      },
+    });
+
+    if (!response.ok) {
+      throw new Error("Error al descargar el video generado.");
+    }
+
+    const blob = await response.blob();
+    return URL.createObjectURL(blob);
+  } catch (error: any) {
+    console.error("Gemini Video generation error:", error);
+    throw new Error(error?.message || "Hubo un problema al generar el video. Por favor, intentá de nuevo.");
+  }
+}
+
 export async function geminiChat(message: string, history: any[]) {
   const ai = getAI();
-  
+
+  const cleanHistory = history.filter(h =>
+    h.parts?.[0]?.text &&
+    h.parts[0].text.trim() !== '' &&
+    !h.parts[0].text.startsWith('⚠️ Error:')
+  );
+
+  const validContents: any[] = [];
+  let lastRole: string | null = null;
+  for (const msg of cleanHistory) {
+    if (msg.role !== lastRole) {
+      validContents.push(msg);
+      lastRole = msg.role;
+    }
+  }
+
   const response = await ai.models.generateContent({
-    model: 'gemini-3-flash-preview', 
+    model: 'gemini-2.5-flash',
     contents: [
-      ...history.map((h: any) => ({
-        role: h.role === 'user' ? 'user' : 'model',
-        parts: [{ text: h.text }]
-      })),
+      ...validContents,
       { role: 'user', parts: [{ text: message }] }
     ],
     config: {
